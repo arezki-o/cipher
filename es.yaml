@@ -1,0 +1,481 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: elastic-agent-crb-osh
+  namespace: osh
+subjects:
+- kind: ServiceAccount
+  name: elastic-agent
+  namespace: osh
+roleRef:
+  kind: ClusterRole
+  name: elastic-agent
+  apiGroup: rbac.authorization.k8s.io
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: elastic-agent-cr-osh
+  namespace: osh
+rules:
+- apiGroups: [""]
+  resources:
+  - pods
+  - nodes
+  - namespaces
+  verbs:
+  - get
+  - watch
+  - list
+- apiGroups: ["coordination.k8s.io"]
+  resources:
+  - leases
+  verbs:
+  - get
+  - create
+  - update
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: elasticsearch-ingress
+  namespace: osh
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`eosh.ciphersa.net`)
+      kind: Rule
+      middlewares:
+      - name: country-mw-block
+      services:
+        - name: osh-elasticsearch-es-http
+          port: 9200
+          scheme: https
+          namespace: osh
+          serversTransport: traefik-servers-transport
+  tls:
+    secretName: tls-osh
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: fleet-ingress
+  namespace: osh
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`fosh.ciphersa.net`)
+      kind: Rule
+      middlewares:
+      - name: country-mw-block
+      services:
+        - name: osh-fleetserver-agent-http
+          port: 8220
+          scheme: https
+          namespace: osh
+          serversTransport: traefik-servers-transport
+  tls:
+    secretName: tls-osh
+apiVersion: agent.k8s.elastic.co/v1alpha1
+kind: Agent
+metadata:
+  name: osh-fleetserver
+  namespace: osh
+spec:
+  version: 8.17.2
+  kibanaRef:
+    name: osh-kibana
+  elasticsearchRefs:
+  - name: osh-elasticsearch
+  mode: fleet
+  fleetServerEnabled: true
+  deployment:
+    replicas: 2
+    podTemplate:
+      spec:
+        serviceAccountName: elastic-agent
+        automountServiceAccountToken: true
+        securityContext:
+          runAsUser: 0
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: nginx-ingress
+  namespace: osh
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`c1ph3.ddns.net`)
+      kind: Rule
+      services:
+        - name: svc-nginx
+          port: 80
+          scheme: http
+          namespace: osh
+
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: kibana-ingress
+  namespace: osh
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`kosh.ciphersa.net`)
+      kind: Rule
+      middlewares:
+      - name: country-mw-block
+      services:
+        - name: osh-kibana-kb-http
+          port: 5601
+          scheme: https
+          namespace: osh
+          serversTransport: traefik-servers-transport
+  tls:
+    secretName: tls-osh
+apiVersion: kibana.k8s.elastic.co/v1
+kind: Kibana
+metadata:
+  name: osh-kibana
+  namespace: osh
+spec:
+  version: 8.17.2
+  count: 3
+  elasticsearchRef:
+    name: osh-elasticsearch
+  podTemplate:
+      spec:
+        containers:
+        - name: kibana
+          resources:
+            requests:
+              memory: 4Gi
+            limits:
+              memory: 4Gi
+  config:
+    xpack.reporting.roles.enabled: false
+    #xpack.fleet.agents.elasticsearch.hosts: ["https://osh-elasticsearch-es-http.osh.svc:9200", "https://eosh.ciphersa.net"]
+    #xpack.fleet.agents.fleet_server.hosts: ["https://osh-fleetserver-agent-http.osh.svc:8220", "https://fosh.ciphersa.net"]
+    #elasticsearch.ssl.verificationMode: "none"
+    xpack.security.authc.providers:
+       saml.saml1:
+         order: 0
+         realm: saml1
+         description: "Log in with Azure AD"
+       basic.basic1:
+         order: 1
+    xpack.fleet.packages:
+      - name: system
+        version: latest
+      - name: elastic_agent
+        version: latest
+      - name: fleet_server
+        version: latest
+    xpack.fleet.agentPolicies:
+      - name: Fleet Server
+        id: osh-fleet-server
+        is_default_fleet_server: true
+        namespace: default
+        is_managed: true
+        monitoring_enabled:
+          - logs
+          - metrics
+        package_policies:
+        - name: fleet_server-1
+          id: fleet_server-1
+          package:
+            name: fleet_server
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: osh-elasticsearch
+  namespace: osh
+spec:
+  monitoring:
+    metrics:
+      elasticsearchRefs:
+      - name: monitor-elasticsearch
+        namespace: monitor
+    logs:
+      elasticsearchRefs:
+      - name: monitor-elasticsearch
+        namespace: monitor
+  version: 8.17.2
+  secureSettings:
+  - secretName: snapshot-secret
+  nodeSets:
+  - name: masters
+    count: 3
+    config:
+      node.roles: ["master"]
+      xpack.security.authc.realms:
+        saml:
+          saml1:
+            attributes.groups: "http://schemas.microsoft.com/ws/2008/06/identity/claims/groups"
+            attributes.principal: "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name"
+            attributes.mail: "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"
+            idp.entity_id: "https://sts.windows.net/e6c8cd32-a795-45dd-8ebf-21e2306b86bf/"
+            idp.metadata.path: "https://login.microsoftonline.com/e6c8cd32-a795-45dd-8ebf-21e2306b86bf/federationmetadata/2007-06/federationmetadata.xml?appid=95cb07f7-bffe-47c4-aa53-bd6455c95a01"
+            order: 2
+            sp.acs: "https://kosh.ciphersa.net/api/security/saml/callback"
+            sp.entity_id: "https://kosh.ciphersa.net"
+            sp.logout: "https://kosh.ciphersa.net/logout"
+    podTemplate:
+      spec:
+        containers:
+        - name: elasticsearch
+          resources:
+            requests:
+              memory: 4Gi
+            limits:
+              memory: 4Gi
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    elasticsearch.k8s.elastic.co/cluster-name: osh-elasticsearch
+                topologyKey: kubernetes.io/hostname
+        initContainers:
+        - name: sysctl
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          command: ['sh', '-c', 'sysctl -w vm.max_map_count=262144']
+    volumeClaimTemplates:
+    - metadata:
+        name: elasticsearch-data
+      spec:
+        accessModes:
+         - ReadWriteOnce
+        resources:
+          requests:
+            storage: 40Gi
+        storageClassName: "alicloud-disk-essd-pl0"
+  - name: hot-nodes
+    count: 3
+    config:
+      node.roles: ["data_hot", "data_content", "ingest", "transform"]
+      xpack.security.authc.realms:
+        saml:
+          saml1:
+            attributes.groups: "http://schemas.microsoft.com/ws/2008/06/identity/claims/groups"
+            attributes.principal: "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name"
+            attributes.mail: "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"
+            idp.entity_id: "https://sts.windows.net/e6c8cd32-a795-45dd-8ebf-21e2306b86bf/"
+            idp.metadata.path: "https://login.microsoftonline.com/e6c8cd32-a795-45dd-8ebf-21e2306b86bf/federationmetadata/2007-06/federationmetadata.xml?appid=95cb07f7-bffe-47c4-aa53-bd6455c95a01"
+            order: 2
+            sp.acs: "https://kosh.ciphersa.net/api/security/saml/callback"
+            sp.entity_id: "https://kosh.ciphersa.net"
+            sp.logout: "https://kosh.ciphersa.net/logout"
+    podTemplate:
+      spec:
+        containers:
+        - name: elasticsearch
+          resources:
+            requests:
+              memory: 8Gi
+            limits:
+              memory: 8Gi
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    elasticsearch.k8s.elastic.co/cluster-name: osh-elasticsearch
+                topologyKey: kubernetes.io/hostname
+        initContainers:
+        - name: sysctl
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          command: ['sh', '-c', 'sysctl -w vm.max_map_count=262144']
+    volumeClaimTemplates:
+    - metadata:
+        name: elasticsearch-data
+      spec:
+        accessModes:
+         - ReadWriteOnce
+        resources:
+          requests:
+            storage: 200Gi
+        storageClassName: "alicloud-disk-essd-pl0"
+  - name: warm-nodes
+    count: 2
+    config:
+      node.roles: ["data_warm", "transform"]
+      xpack.security.authc.realms:
+        saml:
+          saml1:
+            attributes.groups: "http://schemas.microsoft.com/ws/2008/06/identity/claims/groups"
+            attributes.principal: "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name"
+            attributes.mail: "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"
+            idp.entity_id: "https://sts.windows.net/e6c8cd32-a795-45dd-8ebf-21e2306b86bf/"
+            idp.metadata.path: "https://login.microsoftonline.com/e6c8cd32-a795-45dd-8ebf-21e2306b86bf/federationmetadata/2007-06/federationmetadata.xml?appid=95cb07f7-bffe-47c4-aa53-bd6455c95a01"
+            order: 2
+            sp.acs: "https://kosh.ciphersa.net/api/security/saml/callback"
+            sp.entity_id: "https://kosh.ciphersa.net"
+            sp.logout: "https://kosh.ciphersa.net/logout"
+    podTemplate:
+      spec:
+        containers:
+        - name: elasticsearch
+          resources:
+            requests:
+              memory: 8Gi
+            limits:
+              memory: 8Gi
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    elasticsearch.k8s.elastic.co/cluster-name: osh-elasticsearch
+                topologyKey: kubernetes.io/hostname
+        initContainers:
+        - name: sysctl
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          command: ['sh', '-c', 'sysctl -w vm.max_map_count=262144']
+    volumeClaimTemplates:
+    - metadata:
+        name: elasticsearch-data
+      spec:
+        accessModes:
+         - ReadWriteOnce
+        resources:
+          requests:
+            storage: 600Gi
+        storageClassName: "alicloud-disk-essd-pl0"
+  - name: frozen-nodes
+    count: 1
+    config:
+      node.roles: ["data_frozen"]
+      xpack.security.authc.realms:
+        saml:
+          saml1:
+            attributes.groups: "http://schemas.microsoft.com/ws/2008/06/identity/claims/groups"
+            attributes.principal: "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name"
+            attributes.mail: "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"
+            idp.entity_id: "https://sts.windows.net/e6c8cd32-a795-45dd-8ebf-21e2306b86bf/"
+            idp.metadata.path: "https://login.microsoftonline.com/e6c8cd32-a795-45dd-8ebf-21e2306b86bf/federationmetadata/2007-06/federationmetadata.xml?appid=95cb07f7-bffe-47c4-aa53-bd6455c95a01"
+            order: 2
+            sp.acs: "https://kosh.ciphersa.net/api/security/saml/callback"
+            sp.entity_id: "https://kosh.ciphersa.net"
+            sp.logout: "https://kosh.ciphersa.net/logout"
+    podTemplate:
+      spec:
+        containers:
+        - name: elasticsearch
+          resources:
+            requests:
+              memory: 4Gi
+            limits:
+              memory: 4Gi
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    elasticsearch.k8s.elastic.co/cluster-name: osh-elasticsearch
+                topologyKey: kubernetes.io/hostname
+        initContainers:
+        - name: sysctl
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          command: ['sh', '-c', 'sysctl -w vm.max_map_count=262144']
+    volumeClaimTemplates:
+    - metadata:
+        name: elasticsearch-data
+      spec:
+        accessModes:
+         - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Ti
+        storageClassName: "alicloud-disk-essd-pl0"
+  - name: ml-nodes
+    count: 2
+    config:
+      node.roles: ["ml"]
+      xpack.security.authc.realms:
+        saml:
+          saml1:
+            attributes.groups: "http://schemas.microsoft.com/ws/2008/06/identity/claims/groups"
+            attributes.principal: "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name"
+            attributes.mail: "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"
+            idp.entity_id: "https://sts.windows.net/e6c8cd32-a795-45dd-8ebf-21e2306b86bf/"
+            idp.metadata.path: "https://login.microsoftonline.com/e6c8cd32-a795-45dd-8ebf-21e2306b86bf/federationmetadata/2007-06/federationmetadata.xml?appid=95cb07f7-bffe-47c4-aa53-bd6455c95a01"
+            order: 2
+            sp.acs: "https://kosh.ciphersa.net/api/security/saml/callback"
+            sp.entity_id: "https://kosh.ciphersa.net"
+            sp.logout: "https://kosh.ciphersa.net/logout"
+    podTemplate:
+      spec:
+        containers:
+        - name: elasticsearch
+          resources:
+            requests:
+              memory: 4Gi
+            limits:
+              memory: 4Gi
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    elasticsearch.k8s.elastic.co/cluster-name: osh-elasticsearch
+                topologyKey: kubernetes.io/hostname
+        initContainers:
+        - name: sysctl
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          command: ['sh', '-c', 'sysctl -w vm.max_map_count=262144']
+    volumeClaimTemplates:
+    - metadata:
+        name: elasticsearch-data
+      spec:
+        accessModes:
+         - ReadWriteOnce
+        resources:
+          requests:
+            storage: 40Gi
+        storageClassName: "alicloud-disk-essd-pl0"
+apiVersion: traefik.containo.us/v1alpha1
+kind: ServersTransport
+metadata:
+  name: traefik-servers-transport
+  namespace: osh
+spec:
+  insecureSkipVerify: true
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: elastic-agent
+  namespace: osh
+
+apiVersion: v1
+data:
+  s3.client.default.access_key: TFRBSTV0UTNNZUE2M1NRd2tMQ1poYXBI
+  s3.client.default.secret_key: VGpOWGE0aUE1RkJVUXNidlNGcWlSOGQ3NlgyNnIw
+kind: Secret
+metadata:
+  name: snapshot-secret
+  namespace: osh
+type: Opaque
