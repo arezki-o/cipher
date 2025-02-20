@@ -1,0 +1,568 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: elastic-agent-crb-fa
+subjects:
+- kind: ServiceAccount
+  name: elastic-agent
+  namespace: fa
+roleRef:
+  kind: ClusterRole
+  name: elastic-agent-cr-fa
+  apiGroup: rbac.authorization.k8s.io
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: elastic-agent-cr-fa
+rules:
+- apiGroups: [""]
+  resources:
+  - pods
+  - nodes
+  - namespaces
+  - deployments
+  verbs:
+  - get
+  - watch
+  - list
+- apiGroups: ["coordination.k8s.io"]
+  resources:
+  - leases
+  verbs:
+  - get
+  - create
+  - update
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: elasticsearch-ingress
+  namespace: ksf
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`eksf.ciphersa.net`)
+      kind: Rule
+      middlewares:
+      - name: country-mw-block
+      services:
+        - name: ksf-elasticsearch-es-http
+          port: 9200
+          scheme: https
+          namespace: ksf
+          serversTransport: traefik-servers-transport
+  tls:
+    secretName: tls-ksf
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: fa-elasticsearch
+  namespace: fa
+spec:
+  monitoring:
+    metrics:
+      elasticsearchRefs:
+      - name: monitor-elasticsearch
+        namespace: monitor
+    logs:
+      elasticsearchRefs:
+      - name: monitor-elasticsearch
+        namespace: monitor
+  version: 8.17.2
+  secureSettings:
+  - secretName: snapshot-secret
+  nodeSets:
+  - name: masters
+    count: 3
+    config:
+      node.roles: ["master"]
+      xpack.security.authc.realms:
+        saml:
+          saml1:
+            attributes.groups: "http://schemas.microsoft.com/ws/2008/06/identity/claims/groups"
+            attributes.principal: "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name"
+            attributes.mail: "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"
+            idp.entity_id: "https://sts.windows.net/e6c8cd32-a795-45dd-8ebf-21e2306b86bf/"
+            idp.metadata.path: "https://login.microsoftonline.com/e6c8cd32-a795-45dd-8ebf-21e2306b86bf/federationmetadata/2007-06/federationmetadata.xml?appid=a8cd2656-5fae-4bc3-9be6-4a1d18843ed0"
+            order: 2
+            sp.acs: "https://kfa.ciphersa.net/api/security/saml/callback"
+            sp.entity_id: "https://kfa.ciphersa.net"
+            sp.logout: "https://kfa.ciphersa.net/logout"
+    podTemplate:
+      spec:
+        containers:
+        - name: elasticsearch
+          resources:
+            requests:
+              memory: 4Gi
+            limits:
+              memory: 4Gi
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    elasticsearch.k8s.elastic.co/cluster-name: fa-elasticsearch
+                topologyKey: kubernetes.io/hostname
+        initContainers:
+        - name: sysctl
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          command: ['sh', '-c', 'sysctl -w vm.max_map_count=262144']
+    volumeClaimTemplates:
+    - metadata:
+        name: elasticsearch-data
+      spec:
+        accessModes:
+         - ReadWriteOnce
+        resources:
+          requests:
+            storage: 40Gi
+        storageClassName: "alicloud-disk-essd-pl0"
+  - name: hot-nodes
+    count: 4
+    config:
+      node.roles: ["data_hot", "data_content", "ingest", "transform"]
+      xpack.security.authc.realms:
+        saml:
+          saml1:
+            attributes.groups: "http://schemas.microsoft.com/ws/2008/06/identity/claims/groups"
+            attributes.principal: "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name"
+            attributes.mail: "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"
+            idp.entity_id: "https://sts.windows.net/e6c8cd32-a795-45dd-8ebf-21e2306b86bf/"
+            idp.metadata.path: "https://login.microsoftonline.com/e6c8cd32-a795-45dd-8ebf-21e2306b86bf/federationmetadata/2007-06/federationmetadata.xml?appid=a8cd2656-5fae-4bc3-9be6-4a1d18843ed0"
+            order: 2
+            sp.acs: "https://kfa.ciphersa.net/api/security/saml/callback"
+            sp.entity_id: "https://kfa.ciphersa.net"
+            sp.logout: "https://kfa.ciphersa.net/logout"
+    podTemplate:
+      spec:
+        containers:
+        - name: elasticsearch
+          resources:
+            requests:
+              memory: 12Gi
+            limits:
+              memory: 12Gi
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    elasticsearch.k8s.elastic.co/cluster-name: fa-elasticsearch
+                topologyKey: kubernetes.io/hostname
+        initContainers:
+        - name: sysctl
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          command: ['sh', '-c', 'sysctl -w vm.max_map_count=262144']
+    volumeClaimTemplates:
+    - metadata:
+        name: elasticsearch-data
+      spec:
+        accessModes:
+         - ReadWriteOnce
+        resources:
+          requests:
+            storage: 600Gi
+        storageClassName: "alicloud-disk-essd-pl0"
+  - name: warm-nodes
+    count: 2
+    config:
+      node.roles: ["data_warm", "transform"]
+      xpack.security.authc.realms:
+        saml:
+          saml1:
+            attributes.groups: "http://schemas.microsoft.com/ws/2008/06/identity/claims/groups"
+            attributes.principal: "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name"
+            attributes.mail: "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"
+            idp.entity_id: "https://sts.windows.net/e6c8cd32-a795-45dd-8ebf-21e2306b86bf/"
+            idp.metadata.path: "https://login.microsoftonline.com/e6c8cd32-a795-45dd-8ebf-21e2306b86bf/federationmetadata/2007-06/federationmetadata.xml?appid=a8cd2656-5fae-4bc3-9be6-4a1d18843ed0"
+            order: 2
+            sp.acs: "https://kfa.ciphersa.net/api/security/saml/callback"
+            sp.entity_id: "https://kfa.ciphersa.net"
+            sp.logout: "https://kfa.ciphersa.net/logout"
+    podTemplate:
+      spec:
+        containers:
+        - name: elasticsearch
+          resources:
+            requests:
+              memory: 12Gi
+            limits:
+              memory: 12Gi
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    elasticsearch.k8s.elastic.co/cluster-name: fa-elasticsearch
+                topologyKey: kubernetes.io/hostname
+        initContainers:
+        - name: sysctl
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          command: ['sh', '-c', 'sysctl -w vm.max_map_count=262144']
+    volumeClaimTemplates:
+    - metadata:
+        name: elasticsearch-data
+      spec:
+        accessModes:
+         - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1.5Ti
+        storageClassName: "alicloud-disk-essd-pl0"
+  - name: frozen-nodes
+    count: 1
+    config:
+      node.roles: ["data_frozen"]
+      xpack.security.authc.realms:
+        saml:
+          saml1:
+            attributes.groups: "http://schemas.microsoft.com/ws/2008/06/identity/claims/groups"
+            attributes.principal: "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name"
+            attributes.mail: "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"
+            idp.entity_id: "https://sts.windows.net/e6c8cd32-a795-45dd-8ebf-21e2306b86bf/"
+            idp.metadata.path: "https://login.microsoftonline.com/e6c8cd32-a795-45dd-8ebf-21e2306b86bf/federationmetadata/2007-06/federationmetadata.xml?appid=a8cd2656-5fae-4bc3-9be6-4a1d18843ed0"
+            order: 2
+            sp.acs: "https://kfa.ciphersa.net/api/security/saml/callback"
+            sp.entity_id: "https://kfa.ciphersa.net"
+            sp.logout: "https://kfa.ciphersa.net/logout"
+    podTemplate:
+      spec:
+        containers:
+        - name: elasticsearch
+          resources:
+            requests:
+              memory: 8Gi
+            limits:
+              memory: 8Gi
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    elasticsearch.k8s.elastic.co/cluster-name: fa-elasticsearch
+                topologyKey: kubernetes.io/hostname
+        initContainers:
+        - name: sysctl
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          command: ['sh', '-c', 'sysctl -w vm.max_map_count=262144']
+    volumeClaimTemplates:
+    - metadata:
+        name: elasticsearch-data
+      spec:
+        accessModes:
+         - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Ti
+        storageClassName: "alicloud-disk-essd-pl0"
+  - name: ml-nodes
+    count: 2
+    config:
+      node.roles: ["ml"]
+      xpack.security.authc.realms:
+        saml:
+          saml1:
+            attributes.groups: "http://schemas.microsoft.com/ws/2008/06/identity/claims/groups"
+            attributes.principal: "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name"
+            attributes.mail: "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"
+            idp.entity_id: "https://sts.windows.net/e6c8cd32-a795-45dd-8ebf-21e2306b86bf/"
+            idp.metadata.path: "https://login.microsoftonline.com/e6c8cd32-a795-45dd-8ebf-21e2306b86bf/federationmetadata/2007-06/federationmetadata.xml?appid=a8cd2656-5fae-4bc3-9be6-4a1d18843ed0"
+            order: 2
+            sp.acs: "https://kfa.ciphersa.net/api/security/saml/callback"
+            sp.entity_id: "https://kfa.ciphersa.net"
+            sp.logout: "https://kfa.ciphersa.net/logout"
+    podTemplate:
+      spec:
+        containers:
+        - name: elasticsearch
+          resources:
+            requests:
+              memory: 4Gi
+            limits:
+              memory: 4Gi
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    elasticsearch.k8s.elastic.co/cluster-name: fa-elasticsearch
+                topologyKey: kubernetes.io/hostname
+        initContainers:
+        - name: sysctl
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          command: ['sh', '-c', 'sysctl -w vm.max_map_count=262144']
+    volumeClaimTemplates:
+    - metadata:
+        name: elasticsearch-data
+      spec:
+        accessModes:
+         - ReadWriteOnce
+        resources:
+          requests:
+            storage: 40Gi
+        storageClassName: "alicloud-disk-essd-pl0"
+apiVersion: agent.k8s.elastic.co/v1alpha1
+kind: Agent
+metadata:
+  name: fa-fleetserver-cloud
+  namespace: fa
+spec:
+  version: 8.17.2
+  policyID: fa-cloud-fleet-server
+  kibanaRef:
+    name: fa-kibana
+  elasticsearchRefs:
+  - name: fa-elasticsearch
+  mode: fleet
+  fleetServerEnabled: true
+  deployment:
+    replicas: 2
+    podTemplate:
+      spec:
+        serviceAccountName: elastic-agent
+        automountServiceAccountToken: true
+        securityContext:
+          runAsUser: 0
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: fleet-ingress
+  namespace: ksf
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`fksf.ciphersa.net`)
+      kind: Rule
+      middlewares:
+      - name: country-mw-block
+      services:
+        - name: ksf-fleetserver-agent-http
+          port: 8220
+          scheme: https
+          namespace: ksf
+          serversTransport: traefik-servers-transport
+  tls:
+    secretName: tls-ksf
+apiVersion: agent.k8s.elastic.co/v1alpha1
+kind: Agent
+metadata:
+  name: fa-fleetserver-local
+  namespace: fa
+spec:
+  version: 8.17.2
+  policyID: fa-local-fleet-server
+  kibanaRef:
+    name: fa-kibana
+  elasticsearchRefs:
+  - name: fa-elasticsearch
+  mode: fleet
+  fleetServerEnabled: true
+  deployment:
+    replicas: 2
+    podTemplate:
+      spec:
+        serviceAccountName: elastic-agent
+        automountServiceAccountToken: true
+        securityContext:
+          runAsUser: 0
+apiVersion: agent.k8s.elastic.co/v1alpha1
+kind: Agent
+metadata:
+  name: fa-fleetserver
+  namespace: fa
+spec:
+  version: 8.17.2
+  kibanaRef:
+    name: fa-kibana
+  elasticsearchRefs:
+  - name: fa-elasticsearch
+  mode: fleet
+  fleetServerEnabled: true
+  deployment:
+    replicas: 2
+    podTemplate:
+      spec:
+        serviceAccountName: elastic-agent
+        automountServiceAccountToken: true
+        securityContext:
+          runAsUser: 0
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: kibana-ingress
+  namespace: fa
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`kfa.ciphersa.net`)
+      kind: Rule
+      middlewares:
+      - name: country-mw-block
+      services:
+        - name: fa-kibana-kb-http
+          port: 5601
+          scheme: https
+          namespace: fa
+          serversTransport: traefik-servers-transport
+apiVersion: kibana.k8s.elastic.co/v1
+kind: Kibana
+metadata:
+  name: fa-kibana
+  namespace: fa
+spec:
+  config:
+    xpack.fleet.agentPolicies:
+    - id: fa-fleet-server-office
+      is_default_fleet_server: false
+      is_managed: true
+      monitoring_enabled:
+      - logs
+      - metrics
+      name: Fleet-Server-Office
+      namespace: default
+      package_policies:
+      - id: fleet_server-office
+        name: fleet_server-office
+        package:
+          name: fleet_server
+    - id: fa-fleet-server-cloud
+      is_default_fleet_server: false
+      is_managed: true
+      monitoring_enabled:
+      - logs
+      - metrics
+      name: Fleet-Server-Cloud
+      namespace: default
+      package_policies:
+      - id: fleet_server-cloud
+        name: fleet_server-cloud
+        package:
+          name: fleet_server
+    - id: fa-fleet-server
+      is_default_fleet_server: true
+      is_managed: true
+      monitoring_enabled:
+      - logs
+      - metrics
+      name: Fleet Server
+      namespace: default
+      package_policies:
+      - id: fleet_server-1
+        name: fleet_server-1
+        package:
+          name: fleet_server
+    xpack.fleet.fleetServerHosts:
+    - host_urls:
+      - https://172.16.2.20:9002
+      id: fleet-server-office
+      is_default: false
+      name: Fleet Server Office
+    - host_urls:
+      - https://10.181.37.20:9002
+      id: fleet-server-cloud
+      is_default: false
+      name: Fleet Server Cloud
+    xpack.fleet.outputs:
+    - hosts:
+      - https://efa.ciphersa.net:443
+      - https://172.16.2.20:9001
+      id: output-office
+      name: Output Office
+      ssl:
+        verification_mode: none
+      type: elasticsearch
+    - hosts:
+      - https://efa.ciphersa.net:443
+      - https://10.181.37.20:9001
+      id: output-cloud
+      name: Output Cloud
+      ssl:
+        verification_mode: none
+      type: elasticsearch
+    xpack.fleet.packages:
+    - name: system
+      version: latest
+    - name: elastic_agent
+      version: latest
+    - name: fleet_server
+      version: latest
+    xpack.reporting.roles.enabled: false
+    xpack.security.authc.providers:
+      basic.basic1:
+        order: 1
+      saml.saml1:
+        description: Log in with Azure AD
+        order: 0
+        realm: saml1
+  count: 2
+  elasticsearchRef:
+    name: fa-elasticsearch
+  podTemplate:
+    spec:
+      containers:
+      - name: kibana
+        resources:
+          limits:
+            memory: 4Gi
+          requests:
+            memory: 4Gi
+  version: 8.17.2
+apiVersion: traefik.containo.us/v1alpha1
+kind: ServersTransport
+metadata:
+  name: traefik-servers-transport
+  namespace: fa
+spec:
+  insecureSkipVerify: true
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: elastic-agent-office
+  namespace: fa
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: elastic-agent-cloud
+  namespace: fa
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: elastic-agent
+  namespace: fa
+
+apiVersion: v1
+data:
+  s3.client.default.access_key: TFRBSTV0UTNNZUE2M1NRd2tMQ1poYXBI
+  s3.client.default.secret_key: VGpOWGE0aUE1RkJVUXNidlNGcWlSOGQ3NlgyNnIw
+kind: Secret
+metadata:
+  name: snapshot-secret
+  namespace: ksf
+type: Opaque
