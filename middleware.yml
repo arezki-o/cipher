@@ -1,0 +1,29 @@
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"traefik.containo.us/v1alpha1","kind":"Middleware","metadata":{"annotations":{},"name":"country-mw-block","namespace":"dfir"},"spec":{"plugin":{"geoblock":{"allowLocalRequests":"true","allowUnknownCountries":"false","allowedIPAddresses":["52.17.24.161"],"api":"https://get.geojs.io/v1/ip/country/{ip}","cacheSize":"15","countries":["SA"],"forceMonthlyUpdate":"true","logAllowedRequests":"true","logApiRequests":"true","logLocalRequests":"true","silentStartUp":"false","unknownCountryApiResponse":"nil"}}}}
+  creationTimestamp: "2024-07-02T11:37:09Z"
+  generation: 2
+  name: country-mw-block
+  namespace: dfir
+  resourceVersion: "1026532403"
+  uid: 81f86794-9063-413e-9542-92a09d29c5ad
+spec:
+  plugin:
+    geoblock:
+      allowLocalRequests: "true"
+      allowUnknownCountries: "false"
+      allowedIPAddresses:
+      - 52.17.24.161
+      api: https://get.geojs.io/v1/ip/country/{ip}
+      cacheSize: "15"
+      countries:
+      - SA
+      forceMonthlyUpdate: "true"
+      logAllowedRequests: "true"
+      logApiRequests: "true"
+      logLocalRequests: "true"
+      silentStartUp: "false"
+      unknownCountryApiResponse: nil
